@@ -3,7 +3,7 @@ from django.contrib import admin
 # Register your models here.
 
 from django.contrib import admin
-from users.models import NewUser
+from users.models import Membership, NewUser, PayHistory, Subscription, UserMembership
 from django.contrib.auth.admin import UserAdmin
 from django.forms import TextInput, Textarea, CharField
 from django import forms
@@ -34,3 +34,7 @@ class UserAdminConfig(UserAdmin):
 
 
 admin.site.register(NewUser, UserAdminConfig)
+admin.site.register(PayHistory)
+admin.site.register(Subscription)
+admin.site.register(Membership)
+admin.site.register(UserMembership)

@@ -5,7 +5,54 @@ from rest_framework.views import APIView
 from .serializers import CustomUserSerializer
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework.permissions import AllowAny
-# from django.contrib.auth import get_user_model
+import secrets, requests, json
+from .models import Membership, PayHistory, Subscription, UserMembership
+import datetime
+from datetime import timedelta
+from datetime import datetime as dt
+
+
+
+def gen_token(length=10, charset="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_"):
+	return "".join([secrets.choice(charset) for _ in range(0, length)])
+
+
+def init_payment(amount, email):
+    url = 'https://api.paystack.co/transaction/initialize'
+    headers = {
+        'Authorization': 'Bearer sk_test_5962ae85817f9a90c7266dc2a5a87ea997c073b6',
+        'Content-Type' : 'application/json',
+        'Accept': 'application/json',
+        }
+    datum = {
+        "email": email,
+        "amount": amount,
+        "reference": "OLX-"+gen_token(),
+        "callback_url": "http://localhost:3001/front-should-be-the-callback/",
+        }
+    x = requests.post(url, data=json.dumps(datum), headers=headers)
+    if x.status_code != 200:
+        return str(x.status_code)
+    
+    results = x.json()
+    return results
+
+def verify_payment(reference):
+    url = 'https://api.paystack.co/transaction/verify/'+reference
+    headers = {
+        'Authorization': 'Bearer sk_test_5962ae85817f9a90c7266dc2a5a87ea997c073b6',
+        'Content-Type' : 'application/json',
+        'Accept': 'application/json',
+        }
+    datum = {
+        "reference": reference
+    }
+    x = requests.get(url, data=json.dumps(datum), headers=headers)
+    if x.status_code != 200:
+        return str(x.status_code)
+    
+    results = x.json()
+    return results
 
 class CustomUserCreate(APIView):
     permission_classes = [AllowAny]
@@ -70,3 +117,48 @@ class BlacklistTokenUpdateView(APIView):
 
 
 
+class ProtectedPage(APIView):
+    def get(self, request):
+        if request.user.is_authenticated == False:
+            return Response({"status": False, "message": "You are not logged in yet."}, status=status.HTTP_401_UNAUTHORIZED)
+        user_membership = UserMembership.objects.get(user=request.user)
+        subscriptions = Subscription.objects.filter(user_membership=user_membership).exists()
+        if subscriptions:
+            return Response({"status": True, "message": "This user has paid"}, status=status.HTTP_200_OK)
+        else:
+            return Response({"status": False, "message": "This user has not paid"}, status=status.HTTP_400_BAD_REQUEST)
+
+class SubscribeUser(APIView):
+    def post(self, request):
+        if request.user.is_authenticated == False:
+            return Response({"status": False, "message": "You are not logged in yet."}, status=status.HTTP_401_UNAUTHORIZED)
+        plan = request.data.get('sub_plan')
+        fetch_membership = Membership.objects.filter(membership_type=plan).exists()
+        if fetch_membership == False:
+            return Response({"status": False, "message": "The Plan you entered does not exists"}, status=status.HTTP_400_BAD_REQUEST)
+        membership = Membership.objects.get(membership_type=plan)
+        price = float(membership.price)*100 # We need to multiply the price by 100 because Paystack receives in kobo and not naira.
+        price = int(price)
+        initialized = init_payment(price, request.user.email)
+        amount = price/100
+        instance = PayHistory.objects.create(amount=amount, payment_for=membership, user=request.user, paystack_charge_id=initialized['data']['reference'], paystack_access_code=initialized['data']['access_code'])
+        UserMembership.objects.filter(user=instance.user).update(reference_code=initialized['data']['reference'])
+        return Response({"status": True, "message": "User can now proceed to make payment with the Authorization URL", "data": initialized["data"]}, status=status.HTTP_200_OK)
+    
+    def get(self, request):
+        ref_code = request.GET.get("reference")
+        check_pay = PayHistory.objects.filter(paystack_charge_id=ref_code).exists()
+        if check_pay == False:
+            # This means payment was not made error should be thrown here...
+            return Response({"status": False, "message": "Invalid Reference code"}, status=status.HTTP_400_BAD_REQUEST)
+        else:
+            payment = PayHistory.objects.get(paystack_charge_id=ref_code)
+            initialized = verify_payment(ref_code)
+            if initialized['data']['status'] == 'success':
+                PayHistory.objects.filter(paystack_charge_id=initialized['data']['reference']).update(paid=True)
+                new_payment = PayHistory.objects.get(paystack_charge_id=initialized['data']['reference'])
+                instance = Membership.objects.get(id=new_payment.payment_for.id)
+                sub = UserMembership.objects.filter(reference_code=initialized['data']['reference']).update(membership=instance)
+                user_membership = UserMembership.objects.get(reference_code=ref_code)
+                Subscription.objects.create(user_membership=user_membership, expires_in=dt.now().date() + timedelta(days=user_membership.membership.duration))
+                return Response({"status": True, "message": "Payment successful. Subscription has been purchased.", "data": initialized["data"]}, status=status.HTTP_200_OK)
