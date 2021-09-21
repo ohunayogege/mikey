@@ -28,7 +28,7 @@ def init_payment(amount, email):
         "email": email,
         "amount": amount,
         "reference": "OLX-"+gen_token(),
-        "callback_url": "http://localhost:3001/front-should-be-the-callback/",
+        "callback_url": "http://localhost:3000/Subscribe",
         }
     x = requests.post(url, data=json.dumps(datum), headers=headers)
     if x.status_code != 200:
@@ -162,3 +162,7 @@ class SubscribeUser(APIView):
                 user_membership = UserMembership.objects.get(reference_code=ref_code)
                 Subscription.objects.create(user_membership=user_membership, expires_in=dt.now().date() + timedelta(days=user_membership.membership.duration))
                 return Response({"status": True, "message": "Payment successful. Subscription has been purchased.", "data": initialized["data"]}, status=status.HTTP_200_OK)
+            elif initialized["data"]["status"] == "abandoned":
+                return Response({"status": False, "message": "Payment was abandoned. Subscription has not been purchased."}, status=status.HTTP_400_BAD_REQUEST)
+            else:
+                return Response({"status": False, "message": "Payment Unsuccessful. Subscription has not been purchased."}, status=status.HTTP_400_BAD_REQUEST)
